@@ -155,9 +155,14 @@ Web and Android replacements:
 
 Full visual detail for screens 1 to 3 sits in DESIGN-SPEC.md in this same folder. Screens 4 to 7 follow the same style rules.
 
-## Open decisions
+## Decisions made
 
-1. App name. Needed before the GitHub repo is created. Little Things cannot be used.
+1. App name: Break down, decided Nov 3, 2026. Repo: https://github.com/kriskrss/break-down
+   The alternative name Distill was checked and dropped: the App Store already has Distill by UNMS in Productivity, and Distill Web Monitor is an established product.
+2. Initial version, built Nov 3, 2026: a static web app (HTML, CSS, JavaScript, no build step) in the same repo, deployed to GitHub Pages like the workout tracker: https://kriskrss.github.io/break-down/
+   The Expo and React Native port reuses the same screens, data shape, and design spec when native features are needed.
+
+## Open decisions
 2. Scope cut for the first build: ship all 7 screens at once, or ship screens 1 to 3 first (list, breakdown, all breakdowns) and add Today and the timer in a second pass?
 3. Nudge on web: a browser cannot send a timed push note in v1 without a server. First build can show the nudge inside the app only. Is that fine for v1?
 
