@@ -1,6 +1,7 @@
-# Task Breakdown App - Product Requirements Document
+# Break down - Product Requirements Document
 
-Working title only. The final name is an open decision. Version 0.1, Nov 3, 2026.
+Name decided Nov 3, 2026: Break down. GitHub repo: https://github.com/kriskrss/break-down
+Version 0.2, Nov 3, 2026.
 Solo v1 decision locked Nov 3, 2026: v1 is for one person only. Sharing comes later.
 
 ## Source and intent
