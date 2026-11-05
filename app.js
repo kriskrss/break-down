@@ -1,6 +1,8 @@
 'use strict';
-/* Break down - a calm task breakdown app. Data stays on this device. */
+/* Break down - a calm task breakdown app with a passcode locked vault. */
 const KEY = 'breakdown-v1';
+const VAULT_STORE = 'breakdown-vault-v2';
+const BV = window.BreakdownVault;
 const SIZES = ['small', 'medium', 'big'];
 const SIZE_LABEL = { small: 'Small', medium: 'Medium', big: 'Big' };
 const SHAPE = { small: 5, medium: 3, big: 1 };
@@ -37,19 +39,100 @@ function seed() {
   };
 }
 
-let S;
-function load() {
-  try { const raw = localStorage.getItem(KEY); S = raw ? JSON.parse(raw) : seed(); }
-  catch (e) { S = seed(); }
+let S = null;
+let session = null;
+let sessionPasscode = '';
+let vaultMeta = { version: 0, lastHash: '', remoteVersion: 0, dirty: false, lastSyncAt: null };
+let syncError = '';
+let persistTimer = null;
+let persistPromise = null;
+let persistQueued = false;
+
+function normalizeData() {
+  if (!S.folders) S.folders = ['Home', 'Personal', 'Work'];
+  if (!S.todos) S.todos = [];
+  if (!S.breakdowns) S.breakdowns = [];
+  if (!S.settings) S.settings = seed().settings;
+  if (!S.today) S.today = { date: todayStr(), refs: [], energy: null };
+  if (!S.stats) S.stats = { date: todayStr(), stepsDone: 0 };
   if (!S.currentBreakdownId && S.breakdowns.length) S.currentBreakdownId = S.breakdowns[0].id;
   // repeats come back when their return date arrives
   const t = todayStr();
   S.todos.forEach(td => { if (td.done && td.returnDate && td.returnDate <= t) { td.done = false; td.returnDate = null; } });
   if (S.today.date !== t) S.today = { date: t, refs: [], energy: null };
   if (S.stats.date !== t) S.stats = { date: t, stepsDone: 0 };
-  save();
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+
+function readStoredVault() {
+  try {
+    const raw = localStorage.getItem(VAULT_STORE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.envelope) return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function writeStoredVault(envelope) {
+  try {
+    localStorage.setItem(VAULT_STORE, JSON.stringify({ envelope: envelope, meta: vaultMeta }));
+  } catch (e) {}
+}
+async function hashText(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function persistNow() {
+  const activeSession = session;
+  if (!activeSession || !S) return;
+  const snapshot = JSON.parse(JSON.stringify(S));
+  const hash = await hashText(JSON.stringify(snapshot));
+  let stored = readStoredVault();
+  let envelope = stored ? stored.envelope : null;
+
+  if (hash !== vaultMeta.lastHash || !envelope) {
+    vaultMeta.version = (vaultMeta.version || 0) + 1;
+    vaultMeta.dirty = true;
+    envelope = await BV.encryptWithSession(activeSession, snapshot, vaultMeta.version, new Date().toISOString());
+    vaultMeta.lastHash = hash;
+    writeStoredVault(envelope);
+  }
+
+  if (BV.syncConfigured() && vaultMeta.dirty && envelope) {
+    try {
+      await BV.pushRemote(activeSession.locator, envelope);
+      vaultMeta.dirty = false;
+      vaultMeta.remoteVersion = vaultMeta.version;
+      vaultMeta.lastSyncAt = new Date().toISOString();
+      syncError = '';
+      writeStoredVault(envelope);
+    } catch (e) {
+      syncError = 'Sync did not finish. Your locked copy is saved on this device.';
+    }
+  }
+
+  if (session === activeSession && S && hash !== await hashText(JSON.stringify(S))) schedulePersist();
+}
+async function flushPersist() {
+  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
+  if (persistPromise) {
+    persistQueued = true;
+    await persistPromise;
+    if (persistQueued) { persistQueued = false; return flushPersist(); }
+    return;
+  }
+  persistPromise = persistNow();
+  try { await persistPromise; }
+  finally {
+    persistPromise = null;
+    if (persistQueued) { persistQueued = false; await flushPersist(); }
+  }
+}
+function schedulePersist() {
+  if (!session || !S) return;
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => { persistTimer = null; flushPersist().catch(() => {}); }, 250);
+}
+function save() { schedulePersist(); }
 
 function nextReturn(repeat) {
   const d = new Date(); let add = 1;
@@ -81,6 +164,193 @@ let view = 'todo';           // todo | breakdown | all | today | timer
 let allFolder = 'All';
 let searchOpen = false, sortAlpha = false, query = '';
 let timer = null;            // {bid, sid, phases:[{label,secs}], idx, remaining, total, running, intId, finished}
+
+/* ---------- passcode gate ---------- */
+let auth = { mode: 'enter', error: '', busy: false, migrationData: null, pendingPasscode: '' };
+function authNote() {
+  if (BV && BV.syncConfigured()) return 'Your list is encrypted before it leaves this device. Open it on another phone with the same passcode and the newest copy loads on its own.';
+  return 'Sync setup is not finished yet. This device will store your list in encrypted form.';
+}
+function renderAuth() {
+  const app = document.getElementById('app');
+  const stored = readStoredVault();
+  let fields = '';
+  let button = '';
+  let intro = '';
+  if (auth.mode === 'unlock') {
+    intro = 'Your list is locked. Enter your passcode to open it.';
+    fields = '<label class="lbl">Passcode</label><input type="password" id="auth-pass" autocomplete="current-password" placeholder="Passcode">';
+    button = '<button class="btn solid authbtn" data-act="auth-unlock">Unlock</button>';
+  } else if (auth.mode === 'migration') {
+    intro = 'Your current list is on this device. Set a passcode to encrypt it. After this, the plain copy on this device is removed.';
+    fields = '<label class="lbl">New passcode</label><input type="password" id="auth-pass" autocomplete="new-password" placeholder="Use a long phrase">' +
+      '<label class="lbl">Type it again</label><input type="password" id="auth-confirm" autocomplete="new-password" placeholder="Passcode again">';
+    button = '<button class="btn solid authbtn" data-act="auth-create">Lock my list</button>';
+  } else if (auth.mode === 'create') {
+    intro = 'No list was found for that passcode. If this is a new setup, confirm the passcode and create your list. If you expected a list from another phone, go back and check the passcode.';
+    fields = '<label class="lbl">Type the passcode again</label><input type="password" id="auth-confirm" autocomplete="new-password" placeholder="Passcode again">';
+    button = '<button class="btn solid authbtn" data-act="auth-create">Create my list</button>' +
+      '<button class="btn authbtn" data-act="auth-back">Back</button>';
+  } else {
+    intro = stored ? 'Your list is locked. Enter your passcode to open it.' : 'Enter your passcode. If your list already syncs from another phone, it will load. If this is your first setup, the next screen asks you to confirm the passcode.';
+    fields = '<label class="lbl">Passcode</label><input type="password" id="auth-pass" autocomplete="current-password" placeholder="Passcode">';
+    button = '<button class="btn solid authbtn" data-act="auth-enter">Open or set up</button>';
+  }
+  app.innerHTML = '<div class="lock fade"><h1>Break down</h1>' +
+    '<p class="lockintro">' + intro + '</p>' + fields +
+    (auth.error ? '<p class="autherror">' + esc(auth.error) + '</p>' : '') +
+    button +
+    '<p class="locknote">' + authNote() + '</p>' +
+    '<p class="locknote">There is no passcode reset. Keep the passcode in your password manager.</p></div>';
+  const input = document.getElementById(auth.mode === 'create' ? 'auth-confirm' : 'auth-pass');
+  if (input) input.focus();
+}
+function setAuthError(message) { auth.error = message; auth.busy = false; renderAuth(); }
+async function adoptOpened(opened, envelopeToStore) {
+  session = opened.session;
+  S = opened.data;
+  vaultMeta = {
+    version: opened.version || 0,
+    lastHash: await hashText(JSON.stringify(S)),
+    remoteVersion: opened.version || 0,
+    dirty: false,
+    lastSyncAt: null
+  };
+  normalizeData();
+  vaultMeta.lastHash = await hashText(JSON.stringify(opened.data));
+  if (envelopeToStore) writeStoredVault(envelopeToStore);
+  if (localStorage.getItem(KEY)) localStorage.removeItem(KEY);
+}
+async function reconcileRemote(passcode) {
+  if (!BV.syncConfigured() || !session) return;
+  const remote = await BV.fetchRemote(session.locator);
+  if (!remote) {
+    vaultMeta.dirty = true;
+    await flushPersist();
+    return;
+  }
+  const remoteOpened = await BV.decryptEnvelope(passcode, remote.envelope);
+  if (remoteOpened.version > vaultMeta.version) {
+    if (vaultMeta.dirty) {
+      const useRemote = confirm('A newer synced list exists. Tap OK to use the synced list and replace this device copy. Tap Cancel to keep this device list and replace the synced copy.');
+      if (!useRemote) {
+        vaultMeta.version = remoteOpened.version;
+        vaultMeta.dirty = true;
+        await flushPersist();
+        return;
+      }
+    }
+    await adoptOpened(remoteOpened, remote.envelope);
+    return;
+  }
+  if (vaultMeta.version > remoteOpened.version) {
+    vaultMeta.dirty = true;
+    await flushPersist();
+  } else {
+    vaultMeta.remoteVersion = remoteOpened.version;
+    vaultMeta.dirty = false;
+  }
+}
+async function unlockWithPasscode(passcode) {
+  const stored = readStoredVault();
+  if (!stored) throw new Error('No locked list is stored on this device.');
+  const opened = await BV.decryptEnvelope(passcode, stored.envelope);
+  sessionPasscode = passcode;
+  await adoptOpened(opened, stored.envelope);
+  if (stored.meta) {
+    vaultMeta.dirty = !!stored.meta.dirty;
+    vaultMeta.lastSyncAt = stored.meta.lastSyncAt || null;
+  }
+  await reconcileRemote(passcode);
+}
+async function enterWithPasscode(passcode) {
+  const stored = readStoredVault();
+  if (stored) { await unlockWithPasscode(passcode); return true; }
+  if (BV.syncConfigured()) {
+    const locator = await BV.deriveLocator(passcode);
+    const remote = await BV.fetchRemote(locator);
+    if (remote) {
+      const opened = await BV.decryptEnvelope(passcode, remote.envelope);
+      sessionPasscode = passcode;
+      await adoptOpened(opened, remote.envelope);
+      return true;
+    }
+  }
+  auth.mode = 'create';
+  auth.pendingPasscode = passcode;
+  auth.error = '';
+  renderAuth();
+  return false;
+}
+async function createVault() {
+  const passcode = auth.mode === 'migration' || auth.mode === 'enter'
+    ? (document.getElementById('auth-pass') || {}).value || ''
+    : auth.pendingPasscode;
+  const confirmInput = document.getElementById('auth-confirm');
+  const again = confirmInput ? confirmInput.value : '';
+  if (!passcode || passcode.length < 8) { setAuthError('Use a passcode of at least 8 characters. A long phrase works best.'); return; }
+  if (again !== passcode) { setAuthError('The two passcodes do not match.'); return; }
+  auth.busy = true;
+  try {
+    session = await BV.makeSession(passcode);
+    sessionPasscode = passcode;
+    S = auth.mode === 'migration' && auth.migrationData ? auth.migrationData : seed();
+    normalizeData();
+    vaultMeta = { version: 0, lastHash: '', remoteVersion: 0, dirty: true, lastSyncAt: null };
+    await flushPersist();
+    const stored = readStoredVault();
+    if (!stored) throw new Error('The encrypted copy could not be saved on this device.');
+    await BV.decryptEnvelope(passcode, stored.envelope);
+    if (localStorage.getItem(KEY)) localStorage.removeItem(KEY);
+    auth.pendingPasscode = '';
+    view = 'todo';
+    render();
+  } catch (e) {
+    session = null; sessionPasscode = ''; S = null;
+    setAuthError(e.message || 'Setup did not finish.');
+  }
+}
+async function handleAuth(act) {
+  if (auth.busy) return;
+  if (act === 'auth-back') { auth.mode = 'enter'; auth.pendingPasscode = ''; auth.error = ''; renderAuth(); return; }
+  if (act === 'auth-create') { await createVault(); return; }
+  const input = document.getElementById('auth-pass');
+  const passcode = input ? input.value : '';
+  if (!passcode) { setAuthError('Enter your passcode.'); return; }
+  auth.busy = true;
+  try {
+    const opened = await enterWithPasscode(passcode);
+    auth.busy = false;
+    if (opened) { view = 'todo'; render(); schedulePersist(); }
+  } catch (e) {
+    session = null; sessionPasscode = ''; S = null;
+    setAuthError(e.code === 'wrong-passcode' ? 'That passcode did not open this list.' : (e.message || 'The list could not be opened.'));
+  }
+}
+async function lockNow() {
+  try { await flushPersist(); } catch (e) {}
+  stopTimerInt(); timer = null;
+  session = null; sessionPasscode = ''; S = null;
+  closeSheet();
+  auth = { mode: readStoredVault() ? 'unlock' : 'enter', error: '', busy: false, migrationData: null, pendingPasscode: '' };
+  renderAuth();
+}
+function initSecure() {
+  if (!BV) {
+    document.getElementById('app').innerHTML = '<div class="lock"><h1>Break down</h1><p class="lockintro">The encryption part of the app did not load. Check your connection and open the app again.</p></div>';
+    return;
+  }
+  const stored = readStoredVault();
+  if (stored) { auth.mode = 'unlock'; renderAuth(); return; }
+  const old = localStorage.getItem(KEY);
+  if (old) {
+    try {
+      auth.migrationData = JSON.parse(old);
+      auth.mode = 'migration';
+    } catch (e) { auth.mode = 'enter'; }
+  }
+  renderAuth();
+}
 
 /* ---------- small builders ---------- */
 function toolbar(icons) {
@@ -369,10 +639,21 @@ function openSuggest() {
     '<p class="hint" style="margin-top:14px">Low builds a short day with no big step. Okay fits a normal day. High fills the whole 5, 3, 1 shape and more.</p>' +
     '<div class="sheetbtns"><button class="btn" data-act="sheet-close">Cancel</button></div></div></div>';
 }
+function syncStatusText() {
+  if (!BV.syncConfigured()) return 'Sync is not connected yet. Your list is encrypted and stored on this device.';
+  if (syncError) return syncError;
+  if (vaultMeta.dirty) return 'Sync is on. Changes are waiting to sync.';
+  return 'Sync is on.' + (vaultMeta.lastSyncAt ? ' Last synced ' + new Date(vaultMeta.lastSyncAt).toLocaleString() + '.' : ' This list is ready to sync.');
+}
 function openSettings() {
   const st = S.settings;
   sheetRoot().innerHTML = '<div class="sheet-bg" data-act="sheet-bg"><div class="sheet">' +
-    '<h2>Settings</h2><p class="hint">Timer times and your one gentle nudge. Everything stays on this device.</p>' +
+    '<h2>Settings</h2><p class="hint">Timer times, your one gentle nudge, and your locked list.</p>' +
+    '<label class="lbl">Private list</label><p class="hint">' + esc(syncStatusText()) + '</p>' +
+    '<div class="sheetbtns"><button class="btn" data-act="lock-now">Lock now</button>' +
+    '<button class="btn" data-act="backup-download">Download encrypted backup</button></div>' +
+    '<div class="sheetbtns"><button class="btn" data-act="backup-import">Import encrypted backup</button></div>' +
+    '<input type="file" id="backup-file" accept=".json,application/json" style="display:none">' +
     '<label class="lbl">Small step minutes</label><input type="number" id="set-small" min="1" max="60" value="' + st.smallMin + '">' +
     '<label class="lbl">Medium step minutes</label><input type="number" id="set-medium" min="1" max="90" value="' + st.mediumMin + '">' +
     '<label class="lbl">Big step: work minutes</label><input type="number" id="set-work" min="1" max="90" value="' + st.pomWork + '">' +
@@ -381,8 +662,64 @@ function openSettings() {
     '<p class="hint" style="margin-top:8px">One nudge only, shown in the app, and only on days when nothing has started by that time.</p>' +
     '<div class="sheetbtns"><button class="btn" data-act="sheet-close">Cancel</button>' +
     '<button class="btn solid" data-act="settings-save">Save</button></div>' +
-    '<button class="danger" data-act="wipe">Delete all my data</button>' +
+    '<button class="danger" data-act="wipe">Delete all my data, including the synced copy</button>' +
     '</div></div>';
+  const file = document.getElementById('backup-file');
+  if (file) file.addEventListener('change', importBackupFile);
+}
+async function downloadBackup() {
+  await flushPersist();
+  const stored = readStoredVault();
+  if (!stored) { alert('There is no encrypted backup to download yet.'); return; }
+  const blob = new Blob([JSON.stringify(stored.envelope, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'break-down-backup.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function importBackupFile(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const envelope = JSON.parse(await file.text());
+    let passcode = sessionPasscode;
+    let opened;
+    try { opened = await BV.decryptEnvelope(passcode, envelope); }
+    catch (err) {
+      passcode = prompt('This backup uses a different passcode. Enter its passcode:') || '';
+      opened = await BV.decryptEnvelope(passcode, envelope);
+    }
+    if (!confirm('Replace the current list with this backup?')) return;
+    session = opened.session;
+    sessionPasscode = passcode;
+    S = opened.data;
+    normalizeData();
+    vaultMeta = {
+      version: Math.max(vaultMeta.version || 0, opened.version || 0) + 1,
+      lastHash: '',
+      remoteVersion: opened.version || 0,
+      dirty: true,
+      lastSyncAt: null
+    };
+    // flushPersist uses the current version as a base and adds one for the restored copy.
+    vaultMeta.version -= 1;
+    await flushPersist();
+    closeSheet(); view = 'todo'; render();
+  } catch (err) {
+    alert(err.message || 'That backup could not be opened.');
+  } finally { e.target.value = ''; }
+}
+async function wipeAllData() {
+  if (!confirm('Delete all tasks, breakdowns, and settings, including the synced copy?')) return;
+  try { if (session) await BV.deleteRemote(session.locator); } catch (e) {}
+  localStorage.removeItem(VAULT_STORE);
+  localStorage.removeItem(KEY);
+  stopTimerInt(); timer = null;
+  session = null; sessionPasscode = ''; S = null;
+  vaultMeta = { version: 0, lastHash: '', remoteVersion: 0, dirty: false, lastSyncAt: null };
+  closeSheet();
+  auth = { mode: 'enter', error: '', busy: false, migrationData: null, pendingPasscode: '' };
+  renderAuth();
 }
 
 /* ---------- render ---------- */
@@ -410,7 +747,9 @@ function toggleStep(bid, sid) {
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]'); if (!el) return;
   const act = el.dataset.act;
-  if (act === 'go') { view = el.dataset.v; render(); }
+  if (act.indexOf('auth-') === 0) { handleAuth(act); }
+  else if (!session && act !== 'sheet-bg') { return; }
+  else if (act === 'go') { view = el.dataset.v; render(); }
   else if (act === 'search') { searchOpen = !searchOpen; if (!searchOpen) query = ''; render(); }
   else if (act === 'sort') { sortAlpha = !sortAlpha; render(); }
   else if (act === 'share') { const url = location.href; if (navigator.share) navigator.share({ title: 'Break down', url }).catch(() => {}); else if (navigator.clipboard) navigator.clipboard.writeText(url); }
@@ -502,6 +841,9 @@ document.addEventListener('click', e => {
   }
   else if (act === 'suggest') openSuggest();
   else if (act === 'energy') { buildToday(el.dataset.e); closeSheet(); view = 'today'; render(); }
+  else if (act === 'lock-now') { lockNow(); }
+  else if (act === 'backup-download') { downloadBackup(); }
+  else if (act === 'backup-import') { const f = document.getElementById('backup-file'); if (f) f.click(); }
   else if (act === 'settings-save') {
     const g = id => document.getElementById(id);
     S.settings.smallMin = Math.max(1, +g('set-small').value || 10);
@@ -511,11 +853,7 @@ document.addEventListener('click', e => {
     S.settings.nudgeTime = g('set-nudge').value || '10:00';
     save(); closeSheet(); render();
   }
-  else if (act === 'wipe') {
-    if (confirm('Delete all tasks, breakdowns, and settings on this device?')) {
-      localStorage.removeItem(KEY); S = seed(); save(); closeSheet(); view = 'todo'; render();
-    }
-  }
+  else if (act === 'wipe') { wipeAllData(); }
 });
 document.addEventListener('input', e => {
   if (e.target && e.target.id === 'newtodo') return;
@@ -528,6 +866,10 @@ document.addEventListener('input', e => {
   }
 });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target && (e.target.id === 'auth-pass' || e.target.id === 'auth-confirm')) {
+    e.preventDefault();
+    handleAuth(auth.mode === 'migration' || auth.mode === 'create' ? 'auth-create' : (readStoredVault() ? 'auth-unlock' : 'auth-enter'));
+  }
   if (e.key === 'Enter' && e.target && e.target.id === 'newtodo') {
     e.preventDefault();
     const rep = document.getElementById('newrepeat');
@@ -536,5 +878,5 @@ document.addEventListener('keydown', e => {
   }
 });
 
-load();
-render();
+window.addEventListener('pagehide', () => { if (session) flushPersist().catch(() => {}); });
+initSecure();

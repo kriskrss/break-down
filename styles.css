@@ -131,6 +131,16 @@ h1,h2{font-family:var(--serif); font-weight:400; margin:0;}
 .energyrow{display:flex; gap:8px; margin-top:12px;}
 .energyrow .btn{flex:1; padding:12px 8px;}
 .danger{color:#b00020; font-size:14px; margin-top:20px; text-decoration:underline; text-underline-offset:3px;}
+
+/* passcode gate */
+.lock{max-width:340px; margin:11dvh auto 0;}
+.lock h1{font-size:36px;}
+.lockintro{font-size:15px; line-height:1.55; color:var(--ink); margin-top:14px;}
+.lock label.lbl{display:block; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--grey); margin:20px 0 6px;}
+.lock input[type=password]{width:100%; border:1px solid var(--faint); border-radius:10px; padding:12px; font-size:16px; outline:none; background:#fff;}
+.authbtn{width:100%; padding:12px 16px; font-size:15px; margin-top:14px;}
+.autherror{color:#b00020; font-size:14px; line-height:1.45; margin-top:12px;}
+.locknote{color:var(--grey); font-size:13px; line-height:1.5; margin-top:16px;}
 .fade{animation:fade .15s ease-in;}
 @keyframes fade{from{opacity:0;} to{opacity:1;}}
 @media (prefers-reduced-motion:reduce){ .fade{animation:none;} }
