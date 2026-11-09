@@ -19,6 +19,16 @@ White, quiet, and mostly text. One orange accent. Serif headings, light list tex
 - No red anywhere. Nothing is overdue in this app.
 - No gradients, no shadows on cards. One soft shadow only, under the floating Break down button.
 
+### Amendment, Nov 8, 2026: Things token system
+
+The values above are superseded by the Things DESIGN.md system (GradientDeck library), applied in styles.css. The look and rules in this spec stay: white, quiet, serif headings, one orange accent in the Today fill only.
+
+- Canvas behind the app column: Mist #F2F5F7. The column itself stays Paper white.
+- Main text: Ink #303336. Second text: Fog #838B96. Quiet icons and remove marks: Silver #9299A4 and Ash #55606E.
+- Lines and borders: Hairline #DFE3E8. Chip and banner fill at rest: Mist #F2F5F7.
+- Cards and banners: 18 px radius, 16 px padding. Inputs: 6 px radius. Body text: weight 400, 15 px, line height 1.6.
+- Orange #E8762C keeps its one job, the Today fill, and also marks a focused input border. Nothing else turns orange.
+
 ## Type
 
 - Headings: a serif font. On Apple devices use the system serif. On web and Android use Georgia as the fallback serif.
