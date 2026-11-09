@@ -28,6 +28,7 @@ The values above are superseded by the Things DESIGN.md system (GradientDeck lib
 - Lines and borders: Hairline #DFE3E8. Chip and banner fill at rest: Mist #F2F5F7.
 - Cards and banners: 18 px radius, 16 px padding. Inputs: 6 px radius. Body text: weight 400, 15 px, line height 1.6.
 - Orange #E8762C keeps its one job, the Today fill, and also marks a focused input border. Nothing else turns orange.
+- Fonts, set Nov 9, 2026 on Sai's word: content text in Play (Google Fonts, 400 and 700, system sans as fallback). Titles stay serif, now Fraunces (400 and 600, Georgia as fallback): screen titles, the view toggle, Up Next names, and the timer numbers and step name. Both load from Google Fonts in index.html; offline, the fallbacks carry the app.
 
 ## Type
 

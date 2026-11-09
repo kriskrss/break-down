@@ -3,8 +3,8 @@
      Break down keeps its own orange in the Signal Blue role: Today fill and focus. */
   --ink:#303336; --grey:#838b96; --ash:#55606e; --silver:#9299a4;
   --faint:#dfe3e8; --rest:#f2f5f7; --paper:#ffffff;
-  --orange:#e8762c; --serif:Georgia,'Times New Roman',serif;
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --orange:#e8762c; --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Play',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
 html,body{margin:0; padding:0; background:var(--rest);}
